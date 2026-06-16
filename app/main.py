@@ -33,6 +33,10 @@ _UNCLEAR_REPLY = (
     "Could you clarify what you're looking for? "
     "I can help answer specific questions about the documents in the knowledge base."
 )
+_PII_REPLY = (
+    "Your message appears to contain sensitive personal information such as a Social Security "
+    "number or credit card number. Please remove any personal data from your query and try again."
+)
 
 
 @app.get("/")
@@ -63,6 +67,14 @@ async def ingest(files: List[UploadFile] = File(...)):
 @app.post("/query", response_model=QueryResponse)
 async def query(body: QueryRequest):
     intent = await classify_intent(body.query)
+
+    # PII detected — refuse before any retrieval or LLM call.
+    if intent.policy_flag == "pii":
+        return QueryResponse(
+            original_query=body.query,
+            intent=intent,
+            answer=_PII_REPLY,
+        )
 
     # Chitchat and unclear intents short-circuit before any retrieval or generation.
     # Chitchat gets a conversational reply; unclear gets a clarifying question.
@@ -96,7 +108,13 @@ async def query(body: QueryRequest):
         store=store,
     )
 
-    answer_result = await generate_answer(body.query, ranked_chunks, insufficient_evidence)
+    answer_result = await generate_answer(
+        body.query,
+        ranked_chunks,
+        insufficient_evidence,
+        answer_format=intent.answer_format,
+        policy_flag=intent.policy_flag,
+    )
 
     return QueryResponse(
         original_query=body.query,

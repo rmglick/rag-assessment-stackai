@@ -20,9 +20,17 @@ class IntentLabel(str, Enum):
     UNCLEAR = "unclear"
 
 
+class AnswerFormat(str, Enum):
+    PLAIN = "plain"
+    LIST = "list"
+    TABLE = "table"
+
+
 class IntentResult(BaseModel):
     label: IntentLabel
     requires_search: bool
+    answer_format: AnswerFormat = AnswerFormat.PLAIN
+    policy_flag: Optional[str] = None  # "pii", "legal", "medical", or None
 
 
 class RankedChunk(BaseModel):

@@ -4,7 +4,7 @@ import re
 from typing import List, Tuple
 
 from app.llm import chat_complete
-from app.models import IntentLabel, IntentResult
+from app.models import AnswerFormat, IntentLabel, IntentResult
 
 logger = logging.getLogger(__name__)
 
@@ -27,34 +27,49 @@ _CHITCHAT_RE = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
+# High-confidence PII patterns. Deliberately conservative — only formats where
+# the pattern itself is the clearest signal (SSN, credit card). Loose digit
+# sequences are excluded to avoid false positives on policy numbers, dates, etc.
+_PII_RE = re.compile(
+    r"""
+    \b\d{3}[-\s]\d{2}[-\s]\d{4}\b    # SSN: 123-45-6789
+    | \b(?:\d{4}[-\s]?){3}\d{4}\b     # Credit card: 1234-5678-9012-3456
+    """,
+    re.VERBOSE,
+)
+
 _CLASSIFY_SYSTEM = """\
 You are an intent classifier for a document question-answering system.
 
-Classify the user message into exactly one of three labels:
+Return JSON with three fields: "label", "answer_format", and "policy_flag".
 
-"knowledge_query"
-  The user is asking a question that likely requires searching a document knowledge base.
-  Examples: "what does the warranty cover?", "how do I reset my password?",
-            "what are the cancellation terms?", "can you explain the refund process?"
+LABEL — exactly one of:
+  "knowledge_query": user is asking a question that likely requires searching a document
+    knowledge base. Examples: "what does the warranty cover?", "what are the cancellation terms?"
+  "chitchat": user is making small talk with no underlying information need.
+    Examples: "you're so helpful!", "that makes sense", "haha okay"
+  "unclear": user's message may contain an information need but is too vague for retrieval.
+    Examples: "can you help me?", "tell me more", "what about that thing?"
 
-"chitchat"
-  The user is making small talk, expressing an emotion, or interacting conversationally
-  with no underlying information need. A conversational reply is appropriate.
-  Examples: "you're so helpful!", "that makes sense", "haha okay", "interesting!"
+  Distinction: "chitchat" → respond conversationally (no search).
+               "unclear"  → ask a clarifying question (no search, not small talk).
 
-"unclear"
-  The user's message may contain an information need but is too vague for retrieval
-  to return anything useful. A clarifying question should be asked — NOT a conversational
-  reply and NOT a search attempt.
-  Examples: "can you help me?", "tell me more", "what about that thing?", "and the other one?"
+ANSWER_FORMAT — best format for knowledge_query responses (use "plain" for chitchat/unclear):
+  "plain": a direct factual answer — single fact, short paragraph, or brief explanation.
+  "list":  question asks for multiple distinct items.
+    Examples: "what are all the covered services?", "list the steps to...", "what are the requirements?"
+  "table": question asks for a comparison or multi-attribute breakdown.
+    Examples: "compare plan A and plan B", "what are the differences between X and Y?"
 
-Behavior distinction — important:
-  "chitchat" → respond conversationally (no retrieval, no clarifying question).
-  "unclear"  → ask a clarifying question, e.g. "Could you tell me more about what
-                you're looking for?" The user likely has an information need but hasn't
-                expressed it specifically enough for retrieval to be useful.
+POLICY_FLAG — null unless the query requests personalized professional advice:
+  "legal":   user is asking for specific legal advice, legal interpretation of their situation,
+             or liability assessment — NOT just a general question about a legal topic.
+  "medical": user is asking for a specific medical diagnosis, treatment recommendation,
+             or prescription — NOT just a general health/medical information question.
+  Use null for all general informational questions, even about legal or medical topics.
 
-Return ONLY valid JSON: {"label": "<label>"}
+Return ONLY valid JSON:
+{"label": "<label>", "answer_format": "<plain|list|table>", "policy_flag": <null|"legal"|"medical">}
 """
 
 _REWRITE_SYSTEM = """\
@@ -82,29 +97,33 @@ def _is_obvious_chitchat(query: str) -> bool:
     return bool(_CHITCHAT_RE.match(query.strip()))
 
 
+def _has_pii(query: str) -> bool:
+    return bool(_PII_RE.search(query))
+
+
 async def classify_intent(query: str) -> IntentResult:
     """
     Classify the query as "chitchat", "knowledge_query", or "unclear".
 
-    Caller behavior by label:
-      chitchat        → respond conversationally; skip retrieval entirely.
-      knowledge_query → rewrite and search the knowledge base.
-      unclear         → ask a clarifying question (e.g. "Could you clarify what
-                        you'd like to know?"). Unlike chitchat, the user likely has
-                        an information need but hasn't expressed it specifically enough
-                        for retrieval to return anything useful. Do not search; do not
-                        respond as if it were small talk.
+    Also returns answer_format ("plain", "list", "table") and policy_flag
+    ("pii", "legal", "medical", or None) in a single pass.
 
-    Two-stage approach:
-      1. Regex pre-filter — catches high-confidence chitchat at ~0 ms with no API cost.
-         Only patterns with essentially zero false-positive risk are included; anything
-         ambiguous goes to the LLM rather than being decided here.
-      2. Mistral LLM (mistral-small-latest, JSON mode, temp=0) — handles everything else.
+    Three-stage approach:
+      1. PII regex — catches SSNs and credit card numbers before any LLM call.
+         Returns policy_flag="pii"; caller should refuse the query.
+      2. Chitchat regex — catches high-confidence greetings/affirmations at ~0 ms.
+      3. Mistral LLM (JSON mode, temp=0) — classifies label, format, and policy flag
+         for everything else in one call.
 
-    Failure fallback: if the LLM call fails or returns an unparseable response, this
-    defaults to "knowledge_query". Failing toward search is safer than failing silently —
-    worst case the user gets empty results rather than no response at all.
+    Failure fallback: defaults to knowledge_query on any LLM error.
     """
+    if _has_pii(query):
+        return IntentResult(
+            label=IntentLabel.KNOWLEDGE_QUERY,
+            requires_search=False,
+            policy_flag="pii",
+        )
+
     if _is_obvious_chitchat(query):
         return IntentResult(label=IntentLabel.CHITCHAT, requires_search=False)
 
@@ -119,14 +138,21 @@ async def classify_intent(query: str) -> IntentResult:
             json_mode=True,
             timeout=8.0,
         )
-        label = IntentLabel(json.loads(raw)["label"])
+        data = json.loads(raw)
+        label = IntentLabel(data["label"])
+        answer_format = AnswerFormat(data.get("answer_format", "plain"))
+        policy_flag = data.get("policy_flag") or None
     except Exception as exc:
         logger.warning("classify_intent failed (%s); defaulting to knowledge_query", exc)
         label = IntentLabel.KNOWLEDGE_QUERY
+        answer_format = AnswerFormat.PLAIN
+        policy_flag = None
 
     return IntentResult(
         label=label,
         requires_search=(label == IntentLabel.KNOWLEDGE_QUERY),
+        answer_format=answer_format,
+        policy_flag=policy_flag,
     )
 
 
