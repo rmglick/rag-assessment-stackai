@@ -39,8 +39,11 @@ Send a JSON body `{"query": "your question"}`. Returns the answer, citations, fl
 
 ## Design Notes
 
+<img width="2720" height="3040" alt="rag_pipeline_architecture" src="https://github.com/user-attachments/assets/b2adf04e-933a-450f-ac33-e48f11face72" />
+
 ### Data ingestion: text extraction and chunking
 PDFs are parsed page-by-page with `pdfplumber`, then chunked using fixed-size windows (400 tokens, ~50 token overlap), with no forced reset at page boundaries. Fixed-size chunking was chosen over sentence-based (variable size, needs a tokenizer dependency) or semantic chunking (circular — requires embeddings to decide where to chunk before chunks exist). Overlap recovers context that would otherwise be lost when a sentence is split across a boundary. Each chunk retains its source filename and page number(s) for citation purposes.
+
 
 ### Query intent detection
 A regex pre-filter catches high-confidence chitchat (greetings, thanks) for free with zero latency; anything ambiguous falls through to a lightweight Mistral classification call returning one of `chitchat`, `knowledge_query`, or `unclear`. `unclear` queries get a clarifying question rather than being silently treated like chitchat. If the classification call fails, the system defaults to `knowledge_query` — failing toward search is safer than failing toward silence. Known limitation: the classifier has no awareness of the knowledge base's actual contents, so generic phrasing can occasionally be misclassified; document-specific phrasing resolves this.
