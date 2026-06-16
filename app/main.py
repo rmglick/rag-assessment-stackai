@@ -4,7 +4,8 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
 
 from app.ingestion import ingest_pdf
-from app.models import IngestFileResult, IngestResponse
+from app.intent import classify_intent, rewrite_query
+from app.models import IngestFileResult, IngestResponse, QueryDebugResponse, QueryRequest
 from app.vector_store import VectorStore
 
 load_dotenv()
@@ -31,3 +32,21 @@ async def ingest(files: List[UploadFile] = File(...)):
         results.append(IngestFileResult(filename=file.filename, chunks_created=chunk_count))
 
     return IngestResponse(files_ingested=len(results), results=results)
+
+
+@app.post("/query", response_model=QueryDebugResponse)
+async def query_debug(body: QueryRequest):
+    """Temporary endpoint: runs intent detection and query rewriting without retrieval."""
+    intent = await classify_intent(body.query)
+
+    rewritten = None
+    alternatives: List[str] = []
+    if intent.requires_search:
+        rewritten, alternatives = await rewrite_query(body.query)
+
+    return QueryDebugResponse(
+        original_query=body.query,
+        intent=intent,
+        rewritten_query=rewritten,
+        alternatives=alternatives,
+    )
