@@ -5,7 +5,7 @@ from app.vector_store import VectorStore
 
 _RRF_K = 60
 _DEFAULT_TOP_K = 5
-_DEFAULT_THRESHOLD = 0.3
+_DEFAULT_THRESHOLD = 0.70
 
 
 def merge_and_rerank(
@@ -32,9 +32,13 @@ def merge_and_rerank(
 
     Insufficient-evidence flag:
       After fusion, the highest cosine similarity among the top results is checked
-      against `similarity_threshold` (default 0.3). If below it, `insufficient_evidence`
+      against `similarity_threshold` (default 0.70). If below it, `insufficient_evidence`
       is True and the caller should decline to answer rather than generate a response
       from weakly-matched chunks.
+      Note: mistral-embed has a naturally high baseline similarity (~0.64–0.68 even
+      for unrelated documents), so 0.30 is too permissive. 0.70 was calibrated against
+      observed score distributions: truly relevant results score 0.71+, irrelevant
+      ones cluster at 0.64–0.68.
     """
     rrf: dict[int, float] = {}
     for rank, (chunk_id, _) in enumerate(keyword_results):

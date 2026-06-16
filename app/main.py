@@ -55,9 +55,12 @@ async def query(body: QueryRequest):
 
     rewritten, _ = await rewrite_query(body.query)
 
+    # Semantic search uses the rewritten query (cleaner phrasing improves embedding match).
+    # BM25 uses the original query — the rewriter sometimes substitutes abstract terms
+    # that don't appear verbatim in source documents, hurting keyword recall.
     query_vector = (await get_embeddings([rewritten]))[0]
     semantic_results = store.semantic_search(query_vector, top_k=20)
-    keyword_results = keyword_index.search(rewritten, top_k=20)
+    keyword_results = keyword_index.search(body.query, top_k=20)
 
     ranked_chunks, insufficient_evidence = merge_and_rerank(
         keyword_results=keyword_results,
