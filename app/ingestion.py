@@ -4,6 +4,7 @@ from typing import List, Tuple
 import pdfplumber
 
 from app.embeddings import get_embeddings
+from app.keyword_search import KeywordIndex
 from app.vector_store import VectorStore
 
 # 1 token ≈ 0.75 words; targets are ~400 tokens and ~50 tokens respectively.
@@ -64,18 +65,21 @@ def chunk_text(
 
 
 async def ingest_pdf(
-    filename: str, pdf_bytes: bytes, store: VectorStore
+    filename: str,
+    pdf_bytes: bytes,
+    store: VectorStore,
+    keyword_index: KeywordIndex,
 ) -> int:
     """
     Extract, chunk, embed, and store all content from a single PDF.
-    Returns the number of chunks created.
+    Adds each chunk to both the vector store (for semantic search) and the
+    keyword index (for BM25 search). Returns the number of chunks created.
     """
     pages = extract_pages(pdf_bytes)
 
-    # Build (text, metadata) pairs across all pages.
     chunk_pairs: List[Tuple[str, dict]] = []
     for page_num, page_text in pages:
-        for i, chunk in enumerate(chunk_text(page_text)):
+        for chunk in chunk_text(page_text):
             chunk_pairs.append((
                 chunk,
                 {
@@ -92,6 +96,7 @@ async def ingest_pdf(
     vectors = await get_embeddings(texts)
 
     for (text, metadata), vector in zip(chunk_pairs, vectors):
-        store.add(text, vector, metadata)
+        chunk_id = store.add(text, vector, metadata)
+        keyword_index.add(chunk_id, text)
 
     return len(chunk_pairs)

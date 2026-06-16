@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel
 
@@ -25,12 +25,21 @@ class IntentResult(BaseModel):
     requires_search: bool
 
 
+class RankedChunk(BaseModel):
+    chunk_id: int
+    text: str
+    rrf_score: float
+    semantic_score: float
+    metadata: Dict[str, Any]
+
+
 class QueryRequest(BaseModel):
     query: str
 
 
-class QueryDebugResponse(BaseModel):
+class QuerySearchResponse(BaseModel):
     original_query: str
-    intent: IntentResult
     rewritten_query: Optional[str] = None
-    alternatives: List[str] = []
+    intent: IntentResult
+    insufficient_evidence: bool = False
+    results: List[RankedChunk] = []
