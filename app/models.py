@@ -33,13 +33,28 @@ class RankedChunk(BaseModel):
     metadata: Dict[str, Any]
 
 
+class Citation(BaseModel):
+    chunk_id: int
+    filename: str
+    page: int
+
+
+class AnswerResult(BaseModel):
+    answer: str
+    citations: List[Citation] = []
+    flagged_claims: List[str] = []
+
+
 class QueryRequest(BaseModel):
     query: str
 
 
-class QuerySearchResponse(BaseModel):
+class QueryResponse(BaseModel):
     original_query: str
     rewritten_query: Optional[str] = None
     intent: IntentResult
     insufficient_evidence: bool = False
+    answer: Optional[str] = None
+    citations: List[Citation] = []
+    flagged_claims: List[str] = []
     results: List[RankedChunk] = []

@@ -4,14 +4,16 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
 
 from app.embeddings import get_embeddings
+from app.generation import generate_answer
 from app.ingestion import ingest_pdf
 from app.intent import classify_intent, rewrite_query
 from app.keyword_search import KeywordIndex
 from app.models import (
     IngestFileResult,
     IngestResponse,
+    IntentLabel,
     QueryRequest,
-    QuerySearchResponse,
+    QueryResponse,
 )
 from app.retrieval import merge_and_rerank
 from app.vector_store import VectorStore
@@ -21,6 +23,15 @@ load_dotenv()
 app = FastAPI(title="RAG Assessment API")
 store = VectorStore()
 keyword_index = KeywordIndex()
+
+_CHITCHAT_REPLY = (
+    "Hello! I'm a document Q&A assistant. "
+    "Ask me anything about the documents in my knowledge base."
+)
+_UNCLEAR_REPLY = (
+    "Could you clarify what you're looking for? "
+    "I can help answer specific questions about the documents in the knowledge base."
+)
 
 
 @app.post("/ingest", response_model=IngestResponse)
@@ -43,14 +54,25 @@ async def ingest(files: List[UploadFile] = File(...)):
     return IngestResponse(files_ingested=len(results), results=results)
 
 
-@app.post("/query", response_model=QuerySearchResponse)
+@app.post("/query", response_model=QueryResponse)
 async def query(body: QueryRequest):
     intent = await classify_intent(body.query)
 
-    if not intent.requires_search:
-        return QuerySearchResponse(
+    # Chitchat and unclear intents short-circuit before any retrieval or generation.
+    # Chitchat gets a conversational reply; unclear gets a clarifying question.
+    # Neither makes a search or generation Mistral call.
+    if intent.label == IntentLabel.CHITCHAT:
+        return QueryResponse(
             original_query=body.query,
             intent=intent,
+            answer=_CHITCHAT_REPLY,
+        )
+
+    if intent.label == IntentLabel.UNCLEAR:
+        return QueryResponse(
+            original_query=body.query,
+            intent=intent,
+            answer=_UNCLEAR_REPLY,
         )
 
     rewritten, _ = await rewrite_query(body.query)
@@ -68,10 +90,15 @@ async def query(body: QueryRequest):
         store=store,
     )
 
-    return QuerySearchResponse(
+    answer_result = await generate_answer(body.query, ranked_chunks, insufficient_evidence)
+
+    return QueryResponse(
         original_query=body.query,
         rewritten_query=rewritten,
         intent=intent,
         insufficient_evidence=insufficient_evidence,
+        answer=answer_result.answer,
+        citations=answer_result.citations,
+        flagged_claims=answer_result.flagged_claims,
         results=ranked_chunks,
     )
