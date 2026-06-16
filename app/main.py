@@ -2,6 +2,7 @@ from typing import List
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 
 from app.embeddings import get_embeddings
 from app.generation import generate_answer
@@ -32,6 +33,11 @@ _UNCLEAR_REPLY = (
     "Could you clarify what you're looking for? "
     "I can help answer specific questions about the documents in the knowledge base."
 )
+
+
+@app.get("/")
+async def serve_ui():
+    return FileResponse("static/index.html")
 
 
 @app.post("/ingest", response_model=IngestResponse)
